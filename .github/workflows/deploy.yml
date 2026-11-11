@@ -1,0 +1,57 @@
+name: Deploy API to AWS EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+          cache: maven
+
+      - name: Package application
+        run: mvn -B package
+
+      - name: Build Docker image
+        run: docker build -t avaliacoes-api:latest .
+
+      - name: Configure SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy image and deployment files
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" 'sudo install -d -m 755 -o "$USER" /opt/avaliacoes-api'
+          scp -i ~/.ssh/deploy_key deploy/compose.yaml "$EC2_USER@$EC2_HOST:/opt/avaliacoes-api/compose.yaml"
+          docker save avaliacoes-api:latest | ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" 'sudo docker load'
+
+      - name: Deploy on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "$EC2_USER@$EC2_HOST" \
+            'sudo docker compose --env-file /etc/avaliacoes-api.env -f /opt/avaliacoes-api/compose.yaml up -d --force-recreate api'
